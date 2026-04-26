@@ -12,13 +12,19 @@ from scheduler import build_schedule, create_excel
 st.set_page_config(page_title="DC Scheduler", layout="wide", page_icon="🚀")
 
 # -----------------------
-# STYLING
+# STYLING (Premium feel)
 # -----------------------
 st.markdown("""
 <style>
 .main {background-color: #0f172a; color: white;}
 h1, h2, h3 {color: #38bdf8;}
 .stButton>button {border-radius: 10px; height: 3em; font-weight: 600;}
+.card {
+    padding: 15px;
+    border-radius: 12px;
+    background-color: #111827;
+    margin-bottom: 10px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -30,12 +36,15 @@ st.title("🚀 Development Center Scheduler")
 if "data" not in st.session_state:
     st.session_state.data = {}
 
+if "tool_count" not in st.session_state:
+    st.session_state.tool_count = 2
+
 data = st.session_state.data
 
 steps = ["⚙️ Setup", "👥 Names", "🧩 Tools", "📊 Review"]
 
 # -----------------------
-# SIDEBAR NAVIGATION (SIMPLE & STABLE)
+# SIDEBAR NAVIGATION
 # -----------------------
 step = st.sidebar.radio("Navigation", steps)
 
@@ -43,10 +52,13 @@ step = st.sidebar.radio("Navigation", steps)
 # STEP 1: SETUP
 # -----------------------
 if step == "⚙️ Setup":
+    st.markdown("### ⚙️ Basic Configuration")
+    st.info("Configure participants, assessors, and DC timing.")
+
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        data["candidates"] = st.number_input("Candidates", 1, 50, 6)
+        data["candidates"] = st.number_input("Participants", 1, 50, 6)
         data["assessors"] = st.number_input("Assessors", 2, 20, 2)
 
     with col2:
@@ -54,7 +66,7 @@ if step == "⚙️ Setup":
         data["end_time"] = st.text_input("End Time", "18:00")
 
     with col3:
-        data["context_minutes"] = st.number_input("Context (mins)", 0, 120, 30)
+        data["context_minutes"] = st.number_input("Context Setting Time (mins)", 0, 120, 30)
 
     data["file_name"] = st.text_input("Output File Name", "DC_Schedule")
 
@@ -62,7 +74,10 @@ if step == "⚙️ Setup":
 # STEP 2: NAMES
 # -----------------------
 elif step == "👥 Names":
-    use_names = st.toggle("Add Names", value=True)
+    st.markdown("### 👥 Add Participants & Assessors")
+    st.info("Optional: Add names for better output clarity.")
+
+    use_names = st.toggle("Add Names", value=False)
 
     col1, col2 = st.columns(2)
 
@@ -83,14 +98,26 @@ elif step == "👥 Names":
         data["participant_names"] = [""] * data.get("candidates", 6)
 
 # -----------------------
-# STEP 3: TOOLS
+# STEP 3: TOOLS (Premium Cards)
 # -----------------------
 elif step == "🧩 Tools":
-    tool_count = st.slider("Number of tools", 2, 10, 2)
+    st.markdown("### 🧩 Configure Assessment Tools")
+    st.info("Define each assessment tool with their respective timing and type.")
+
+    tool_count = st.number_input(
+        "Number of Assessment Tools",
+        min_value=2,
+        max_value=10,
+        step=1,
+        key="tool_count"
+    )
+
     tools = []
 
     for i in range(int(tool_count)):
-        st.markdown(f"### Tool {i+1}")
+
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown(f"#### Assessment Tool {i+1}")
 
         tool_type = st.selectbox(
             "Type",
@@ -110,11 +137,9 @@ elif step == "🧩 Tools":
         else:
             defaults = (10, 15, 30, 10)
 
-        # Initialize ONCE (prevents reset on navigation)
         if f"instr{i}" not in st.session_state:
             st.session_state[f"instr{i}"], st.session_state[f"prep{i}"], st.session_state[f"exec{i}"], st.session_state[f"score{i}"] = defaults
 
-        # Detect actual dropdown change
         prev_type_key = f"prev_type{i}"
 
         if prev_type_key not in st.session_state:
@@ -124,7 +149,7 @@ elif step == "🧩 Tools":
             st.session_state[f"instr{i}"], st.session_state[f"prep{i}"], st.session_state[f"exec{i}"], st.session_state[f"score{i}"] = defaults
             st.session_state[prev_type_key] = tool_type
 
-        name = st.text_input("Tool Name", key=f"name{i}")
+        name = st.text_input("Exercise Name", key=f"name{i}")
 
         c1, c2, c3, c4 = st.columns(4)
 
@@ -133,9 +158,11 @@ elif step == "🧩 Tools":
         execution = c3.number_input("Execution", 0, 180, key=f"exec{i}")
         scoring = c4.number_input("Scoring", 0, 60, key=f"score{i}")
 
+        st.markdown('</div>', unsafe_allow_html=True)
+
         tools.append({
             "index": i,
-            "name": name if name else f"Tool {i+1}",
+            "name": name if name else tool_type,
             "instruction_slots": instruction // 5,
             "preparation_slots": prep // 5,
             "execution_slots": execution // 5,
@@ -152,12 +179,21 @@ elif step == "🧩 Tools":
 # STEP 4: REVIEW
 # -----------------------
 elif step == "📊 Review":
-    st.subheader("Summary")
+    st.markdown("### 📊 Review & Generate Schedule")
     st.write(data)
 
     try:
         start_dt = datetime.strptime(data["start_time"], "%H:%M")
         end_dt = datetime.strptime(data["end_time"], "%H:%M")
+
+        # VALIDATION
+        if start_dt >= end_dt:
+            st.error("End time must be after start time")
+            st.stop()
+
+        if not data.get("tools"):
+            st.warning("Please add at least one exercise")
+            st.stop()
 
         inputs = {
             "candidates": data["candidates"],
