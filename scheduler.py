@@ -511,6 +511,36 @@ def schedule_context(schedule, candidate_count, context_slots):
             schedule[candidate][slot] = "Context Setting"
 
 
+def assessor_has_lunch(assessor_busy, assessor, day, inputs):
+    return any(
+        assessor_busy[assessor].get(slot) == "Lunch"
+        for slot in range(day_start_slot(day, inputs), day_end_slot(day, inputs))
+    )
+
+
+def reserve_assessor_lunches_for_day(assessor_busy, inputs, day, assessor_lunches):
+    for assessor in range(inputs["assessors"]):
+        if assessor_has_lunch(assessor_busy, assessor, day, inputs):
+            continue
+
+        for lunch_start in lunch_start_candidates(day, inputs):
+            lunch_end = lunch_start + lunch_slots()
+
+            if all(not assessor_busy[assessor].get(slot) for slot in range(lunch_start, lunch_end)):
+                for slot in range(lunch_start, lunch_end):
+                    assessor_busy[assessor][slot] = "Lunch"
+
+                assessor_lunches.append({
+                    "day": day,
+                    "assessor": assessor,
+                    "start_slot": lunch_start,
+                    "end_slot": lunch_end,
+                })
+                break
+        else:
+            raise ValueError(f"Could not reserve lunch for {assessor_code(assessor)} on Day {day + 1}.")
+
+
 def block_feasible(start_slot, tool, assignments, exec_counts, score_counts, assessor_busy, inputs):
     if normalize_start_slot(start_slot, tool_total_slots(tool), inputs) != start_slot:
         return False
@@ -620,41 +650,6 @@ def total_days_for_slot_count(max_slot, inputs):
     return max(1, math.ceil(max_slot / inputs["slots_per_day"]))
 
 
-def assessor_has_lunch(assessor_busy, assessor, day, inputs):
-    return any(
-        assessor_busy[assessor].get(slot) == "Lunch"
-        for slot in range(day_start_slot(day, inputs), day_end_slot(day, inputs))
-    )
-
-
-def schedule_assessor_lunches(assessor_busy, inputs, total_days):
-    assessor_lunches = []
-
-    for day in range(total_days):
-        for assessor in range(inputs["assessors"]):
-            if assessor_has_lunch(assessor_busy, assessor, day, inputs):
-                continue
-
-            for lunch_start in lunch_start_candidates(day, inputs):
-                lunch_end = lunch_start + lunch_slots()
-
-                if all(not assessor_busy[assessor].get(slot) for slot in range(lunch_start, lunch_end)):
-                    for slot in range(lunch_start, lunch_end):
-                        assessor_busy[assessor][slot] = "Lunch"
-
-                    assessor_lunches.append({
-                        "day": day,
-                        "assessor": assessor,
-                        "start_slot": lunch_start,
-                        "end_slot": lunch_end,
-                    })
-                    break
-            else:
-                raise ValueError(f"Could not schedule lunch for {assessor_code(assessor)} on Day {day + 1}.")
-
-    return assessor_lunches
-
-
 def build_schedule(inputs):
     schedule = defaultdict(dict)
     schedule_assessors = defaultdict(dict)
@@ -670,6 +665,7 @@ def build_schedule(inputs):
         for assessor_index in range(inputs["assessors"])
     }
     participant_assessors = defaultdict(set)
+    assessor_lunches = []
 
     schedule_context(schedule, inputs["candidates"], inputs["context_slots"])
 
@@ -682,6 +678,8 @@ def build_schedule(inputs):
     for tool in tools:
         if tool_total_slots(tool) > inputs["slots_per_day"]:
             raise ValueError(f"{tool['name']} is longer than one DC day.")
+
+    reserve_assessor_lunches_for_day(assessor_busy, inputs, 0, assessor_lunches)
 
     while any(group["next_tool_index"] < len(tools) for group in groups):
         groups.sort(key=lambda item: (item["ready_slot"], item["index"]))
@@ -699,6 +697,12 @@ def build_schedule(inputs):
 
                 while True:
                     start_slot = normalize_start_slot(start_slot, total_slots, inputs)
+                    reserve_assessor_lunches_for_day(
+                        assessor_busy,
+                        inputs,
+                        day_index(start_slot, inputs),
+                        assessor_lunches,
+                    )
 
                     if start_slot > search_limit:
                         raise ValueError(f"Could not schedule {group['name']} for {tool['name']} within 30 DC days.")
@@ -742,7 +746,8 @@ def build_schedule(inputs):
     max_slot = current_max_slot(schedule, inputs["context_slots"])
     total_days = total_days_for_slot_count(max_slot, inputs)
 
-    assessor_lunches = schedule_assessor_lunches(assessor_busy, inputs, total_days)
+    for day in range(total_days):
+        reserve_assessor_lunches_for_day(assessor_busy, inputs, day, assessor_lunches)
 
     return {
         "schedule": schedule,
