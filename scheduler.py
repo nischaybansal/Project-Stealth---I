@@ -1,4 +1,3 @@
-
 from collections import defaultdict
 from copy import copy
 from datetime import datetime
@@ -6,6 +5,7 @@ from itertools import permutations, product
 import math
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -541,7 +541,7 @@ def reserve_assessor_lunches_for_day(assessor_busy, inputs, day, assessor_lunche
             raise ValueError(f"Could not reserve lunch for {assessor_code(assessor)} on Day {day + 1}.")
 
 
-def block_feasible(start_slot, tool, assignments, exec_counts, score_counts, assessor_busy, inputs):
+def block_feasible(schedule, group, start_slot, tool, assignments, exec_counts, score_counts, assessor_busy, inputs):
     if normalize_start_slot(start_slot, tool_total_slots(tool), inputs) != start_slot:
         return False
 
@@ -550,6 +550,10 @@ def block_feasible(start_slot, tool, assignments, exec_counts, score_counts, ass
     for phase_name, duration_slots in phase_sequence(tool):
         for offset in range(duration_slots):
             slot = current_slot + offset
+
+            for candidate in group["members"]:
+                if schedule[candidate].get(slot):
+                    return False
 
             if phase_needs_assessor(phase_name):
                 for assessor in assignments.values():
@@ -650,6 +654,21 @@ def total_days_for_slot_count(max_slot, inputs):
     return max(1, math.ceil(max_slot / inputs["slots_per_day"]))
 
 
+def ordered_groups_for_scheduling(groups, inputs):
+    order = inputs.get("group_priority_order")
+    mode = inputs.get("group_priority_mode", "ready")
+
+    if order is None:
+        rank = {group["index"]: group["index"] for group in groups}
+    else:
+        rank = {group_index: position for position, group_index in enumerate(order)}
+
+    if mode == "priority":
+        return sorted(groups, key=lambda group: (rank.get(group["index"], group["index"]), group["ready_slot"], group["index"]))
+
+    return sorted(groups, key=lambda group: (group["ready_slot"], rank.get(group["index"], group["index"]), group["index"]))
+
+
 def build_schedule(inputs):
     schedule = defaultdict(dict)
     schedule_assessors = defaultdict(dict)
@@ -682,9 +701,7 @@ def build_schedule(inputs):
     reserve_assessor_lunches_for_day(assessor_busy, inputs, 0, assessor_lunches)
 
     while any(group["next_tool_index"] < len(tools) for group in groups):
-        groups.sort(key=lambda item: (item["ready_slot"], item["index"]))
-
-        for group in groups:
+        for group in ordered_groups_for_scheduling(groups, inputs):
             if group["next_tool_index"] >= len(tools):
                 continue
 
@@ -707,13 +724,25 @@ def build_schedule(inputs):
                     if start_slot > search_limit:
                         raise ValueError(f"Could not schedule {group['name']} for {tool['name']} within 30 DC days.")
 
-                    if block_feasible(start_slot, tool, assignments, exec_counts, score_counts, assessor_busy, inputs):
+                    if block_feasible(
+                        schedule,
+                        group,
+                        start_slot,
+                        tool,
+                        assignments,
+                        exec_counts,
+                        score_counts,
+                        assessor_busy,
+                        inputs,
+                    ):
                         break
 
                     start_slot += 1
 
                 if group["ready_slot"] < start_slot:
-                    schedule_group_lunch_in_gap(schedule, group, group["ready_slot"], start_slot, inputs)
+                    lunch_scheduled = schedule_group_lunch_in_gap(schedule, group, group["ready_slot"], start_slot, inputs)
+                    if lunch_scheduled and group["ready_slot"] > start_slot:
+                        continue
 
                 tool_end = start_slot + total_slots
 
@@ -1132,6 +1161,8 @@ def apply_workbook_template(workbook):
 
         for row in ws.iter_rows():
             for cell in row:
+                if isinstance(cell, MergedCell):
+                    continue
                 new_font = copy(cell.font)
                 new_font.name = FONT_NAME
                 cell.font = new_font
@@ -1206,6 +1237,57 @@ def lunch_quality_score(result, inputs):
     return score
 
 
+def participant_idle_scores(result, inputs):
+    total_idle = 0
+    before_lunch_idle = 0
+
+    for candidate in range(1, inputs["candidates"] + 1):
+        candidate_schedule = result["schedule"][candidate]
+
+        for day in range(result["total_days"]):
+            day_start = day_start_slot(day, inputs)
+            day_end = day_end_slot(day, inputs)
+            active_slots = [
+                slot
+                for slot in range(day_start, day_end)
+                if candidate_schedule.get(slot) not in (None, "")
+            ]
+
+            if not active_slots:
+                continue
+
+            count_start = inputs["context_slots"] if day == 0 else day_start
+            count_end = max(active_slots) + 1
+            window = lunch_window_slot_range(day, inputs)
+            before_lunch_cutoff = window[1] + lunch_slots() if window else count_end
+
+            for slot in range(count_start, count_end):
+                if candidate_schedule.get(slot) in (None, ""):
+                    total_idle += 1
+                    if slot < before_lunch_cutoff:
+                        before_lunch_idle += 1
+
+    return before_lunch_idle, total_idle
+
+
+def schedule_quality_tuple(result, inputs):
+    before_lunch_idle, total_idle = participant_idle_scores(result, inputs)
+    return (
+        result["max_slot"],
+        before_lunch_idle,
+        total_idle,
+        lunch_quality_score(result, inputs),
+    )
+
+
+def group_priority_orders(group_count):
+    if group_count <= 4:
+        return list(permutations(range(group_count)))
+
+    base = tuple(range(group_count))
+    return [base, tuple(reversed(base))]
+
+
 def find_fastest_schedule(inputs):
     tools = inputs["tools"]
     n = len(tools)
@@ -1213,50 +1295,63 @@ def find_fastest_schedule(inputs):
     group_count = len(groups)
 
     other_rotation_combos = list(product(range(n), repeat=max(group_count - 1, 0)))
-    total = math.factorial(n) * len(other_rotation_combos)
+    priority_orders = group_priority_orders(group_count)
+    priority_modes = ["ready", "priority"]
+
+    total = math.factorial(n) * len(other_rotation_combos) * len(priority_orders) * len(priority_modes)
 
     if total > 1_000_000:
         print(f"Warning: {total:,} combinations to try. This may take several minutes.")
     else:
-        print(f"Trying {total:,} combinations to find the fastest schedule...")
+        print(f"Trying {total:,} combinations to find the fastest, best-utilized schedule...")
 
     best_inputs = None
     best_result = None
-    best_max_slot = None
-    best_lunch_score = None
+    best_quality = None
 
     for perm_indices in permutations(range(n)):
         perm_tools = reindex_tools([tools[index] for index in perm_indices])
 
         for other_rots in other_rotation_combos:
             rotations = [0] + list(other_rots)
-            perm_inputs = {**inputs, "tools": perm_tools, "group_rotations": rotations}
 
-            try:
-                result = build_schedule(perm_inputs)
-                validate_schedule(result, perm_inputs)
-            except ValueError:
-                continue
+            for priority_order in priority_orders:
+                for priority_mode in priority_modes:
+                    perm_inputs = {
+                        **inputs,
+                        "tools": perm_tools,
+                        "group_rotations": rotations,
+                        "group_priority_order": priority_order,
+                        "group_priority_mode": priority_mode,
+                    }
 
-            lunch_score = lunch_quality_score(result, perm_inputs)
+                    try:
+                        result = build_schedule(perm_inputs)
+                        validate_schedule(result, perm_inputs)
+                    except ValueError:
+                        continue
 
-            if (
-                best_result is None
-                or result["max_slot"] < best_max_slot
-                or (result["max_slot"] == best_max_slot and lunch_score < best_lunch_score)
-            ):
-                best_inputs = perm_inputs
-                best_result = result
-                best_max_slot = result["max_slot"]
-                best_lunch_score = lunch_score
+                    quality = schedule_quality_tuple(result, perm_inputs)
+
+                    if best_result is None or quality < best_quality:
+                        best_inputs = perm_inputs
+                        best_result = result
+                        best_quality = quality
 
     if best_result is None:
         raise ValueError("No valid schedule found for any combination.")
 
-    print("\nFastest schedule found:")
-    for group in best_result["groups"]:
+    print("\nBest schedule found:")
+    for group in sorted(best_result["groups"], key=lambda item: item["index"]):
         order = " -> ".join(tool["name"] for tool in group["tool_order"])
         print(f"  {group['name']}: {order}")
+
+    before_lunch_idle, total_idle = participant_idle_scores(best_result, best_inputs)
+    print(
+        f"Score: ends at slot {best_result['max_slot']}, "
+        f"before-lunch idle {slots_to_minutes(before_lunch_idle)} participant-minutes, "
+        f"total idle {slots_to_minutes(total_idle)} participant-minutes."
+    )
 
     return best_inputs, best_result
 
