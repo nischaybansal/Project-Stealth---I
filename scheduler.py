@@ -1,6 +1,4 @@
-Here you go. This version keeps borders around scheduled blocks, removes borders from empty schedule cells, hides Excel gridlines, and applies Montserrat.
 
-```python
 from collections import defaultdict
 from copy import copy
 from datetime import datetime
@@ -1268,4 +1266,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
