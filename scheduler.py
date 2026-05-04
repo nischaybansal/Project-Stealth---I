@@ -1,4 +1,3 @@
-
 from collections import defaultdict
 from copy import copy
 from datetime import datetime
@@ -237,9 +236,27 @@ def phase_needs_assessor(phase_name):
 
 
 def paired_assessor_index(index, assessor_count):
+    # Even assessors: normal pairs
+    # A1<->A2, A3<->A4, A5<->A6
     if assessor_count % 2 == 0:
         return index + 1 if index % 2 == 0 else index - 1
-    return (index + 1) % assessor_count
+
+    # One assessor only: same assessor is both primary and secondary
+    if assessor_count == 1:
+        return index
+
+    # Odd assessors: pair everyone except the last three.
+    # Last three rotate among themselves.
+    trio_start = assessor_count - 3
+
+    if index < trio_start:
+        return index + 1 if index % 2 == 0 else index - 1
+
+    # Last trio example for 7 assessors:
+    # A5 -> A6, A6 -> A7, A7 -> A5
+    trio_position = index - trio_start
+    return trio_start + ((trio_position + 1) % 3)
+
 
 
 def create_groups(candidate_count, assessor_count):
