@@ -87,7 +87,7 @@ if step == "⚙️ Setup":
     st.info("""
 Configure participants, assessors, and DC timing.
 
-**General disclaimer: no confidential/personal data needs to be uploaded**
+**General disclaimer: No confidential/personal data needs to be uploaded**
 """)
 
     col1, col2, col3 = st.columns(3)
@@ -98,7 +98,7 @@ Configure participants, assessors, and DC timing.
 
     with col2:
         data["start_time"] = st.text_input("Start Time", "09:00")
-        data["end_time"] = st.text_input("End Time", "18:00")
+        data["end_time"] = st.text_input("End Time", "20:00")
 
     with col3:
         data["context_minutes"] = st.number_input("Context Setting Time (mins)", 0, 120, 30)
