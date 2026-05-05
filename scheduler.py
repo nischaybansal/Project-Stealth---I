@@ -236,27 +236,19 @@ def phase_needs_assessor(phase_name):
 
 
 def paired_assessor_index(index, assessor_count):
-    # Even assessors: normal pairs
-    # A1<->A2, A3<->A4, A5<->A6
     if assessor_count % 2 == 0:
         return index + 1 if index % 2 == 0 else index - 1
 
-    # One assessor only: same assessor is both primary and secondary
     if assessor_count == 1:
         return index
 
-    # Odd assessors: pair everyone except the last three.
-    # Last three rotate among themselves.
     trio_start = assessor_count - 3
 
     if index < trio_start:
         return index + 1 if index % 2 == 0 else index - 1
 
-    # Last trio example for 7 assessors:
-    # A5 -> A6, A6 -> A7, A7 -> A5
     trio_position = index - trio_start
     return trio_start + ((trio_position + 1) % 3)
-
 
 
 def create_groups(candidate_count, assessor_count):
@@ -885,13 +877,23 @@ def write_schedule_sheet(workbook, inputs, result, sheet_title="Assessor Schedul
     mapping_start_column = schedule_column_count + 3
     mapping_column_count = len(inputs["tools"]) + 2
     mapping_end_column = mapping_start_column + mapping_column_count - 1
-    used_max_column = mapping_end_column
+
+    show_assessor_mapping = sheet_title == "Assessor Schedule" and participant_filter is None
+    show_participant_table = participant_filter is None
+
+    if show_assessor_mapping:
+        used_max_column = mapping_end_column
+    elif show_participant_table:
+        used_max_column = mapping_start_column + 1
+    else:
+        used_max_column = time_repeat_column
+
     max_slot = result["max_slot"]
     include_day = result["total_days"] > 1
 
     participant_table_start_row = 3 + inputs["assessors"] + 2
     participant_table_end_row = participant_table_start_row + inputs["candidates"]
-    used_max_row = max(max_slot + 3, participant_table_end_row)
+    used_max_row = max(max_slot + 3, participant_table_end_row if show_participant_table else max_slot + 3)
 
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=used_max_column)
     ws["A1"] = "DC Schedule"
@@ -935,14 +937,18 @@ def write_schedule_sheet(workbook, inputs, result, sheet_title="Assessor Schedul
             elif isinstance(value, str) and value.endswith(" Exec") and slot in result["schedule_assessors"][candidate]:
                 cell.fill = assessor_fill(result["schedule_assessors"][candidate][slot])
 
-    if participant_filter is None:
+    if show_assessor_mapping:
         write_mapping_box(ws, inputs, result, 3, mapping_start_column)
+
+    if show_participant_table:
         write_participant_table(ws, inputs, participant_table_start_row, mapping_start_column)
 
     format_schedule_sheet(ws, display_candidates, max_slot, used_max_column, used_max_row, time_repeat_column)
 
-    if participant_filter is None:
+    if show_assessor_mapping:
         format_mapping_box(ws, inputs, 3, mapping_start_column)
+
+    if show_participant_table:
         format_participant_table(ws, inputs, participant_table_start_row, mapping_start_column)
 
     merge_repeated_activities(ws, display_candidates, max_slot)
