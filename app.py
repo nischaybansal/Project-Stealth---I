@@ -50,9 +50,15 @@ h1, h2, h3 {color: #38bdf8;}
 .metric-card {
     padding: 18px;
     border-radius: 14px;
-    background: linear-gradient(135deg, #111827, #1e293b);
-    border: 1px solid #334155;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
     margin-bottom: 12px;
+    color: #111827;
+}
+
+.metric-card h4,
+.metric-card p {
+    color: #111827;
 }
 </style>
 """,
