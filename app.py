@@ -87,9 +87,7 @@ if step == "⚙️ Setup":
     st.info("""
 Configure participants, assessors, and DC timing.
 
-**Points to Note**
-- Please do not mention SHL or the project/client name.
-- Please do not mention the tool name while defining the exercise.
+**General disclaimer: no confidential/personal data needs to be uploaded**
 """)
 
     col1, col2, col3 = st.columns(3)
