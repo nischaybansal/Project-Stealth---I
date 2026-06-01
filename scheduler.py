@@ -862,10 +862,119 @@ def validate_schedule(result, inputs):
         raise ValueError("Schedule failed quality checks:\n" + "\n".join(f"- {error}" for error in errors))
 
 
+def participant_display_name(participant, inputs):
+    name = inputs["participant_names"][participant - 1].strip()
+    return f"{participant_code(participant)} - {name}" if name else participant_code(participant)
+
+
+def participant_clock_text(minute):
+    hour = minute // 60
+    minute_value = minute % 60
+    suffix = "am" if hour < 12 else "pm"
+    display_hour = hour % 12 or 12
+    return f"{display_hour}:{minute_value:02d}{suffix}"
+
+
+def participant_time_range(inputs, start_slot, end_slot):
+    start = participant_clock_text(minute_for_slot(start_slot, inputs))
+
+    if end_slot > 0 and end_slot % inputs["slots_per_day"] == 0:
+        end_minute = inputs["end_minute"]
+    else:
+        end_minute = minute_for_slot(end_slot, inputs)
+
+    end = participant_clock_text(end_minute)
+    return f"{start} - {end}"
+
+
+def participant_activity_text(value):
+    if value in (None, "", "Lunch"):
+        return "Break"
+
+    if not isinstance(value, str):
+        return value
+
+    if value.endswith(" Score"):
+        return "Break"
+
+    replacements = {
+        " Instr": " Instructions",
+        " Prep": " Preparation",
+        " Exec": " Execution",
+    }
+
+    for old, new in replacements.items():
+        if value.endswith(old):
+            return value[:-len(old)] + new
+
+    return value
+
+
+def write_compact_participant_sheet(ws, inputs, result, participant):
+    dark_blue = PatternFill("solid", fgColor="002060")
+    green = PatternFill("solid", fgColor="A9D18E")
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2)
+    ws["A1"] = "Development Centre"
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=2)
+    ws["A2"] = participant_display_name(participant, inputs)
+
+    ws["A3"] = "Time"
+    ws["B3"] = "Activity"
+
+    for cell in (ws["A1"], ws["A2"], ws["A3"], ws["B3"]):
+        cell.font = Font(name=FONT_NAME, bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+
+    ws["A1"].fill = dark_blue
+    ws["A1"].font = Font(name=FONT_NAME, color="FFFFFF", bold=True)
+    ws["A3"].fill = green
+    ws["B3"].fill = green
+
+    row = 4
+    schedule = result["schedule"][participant]
+    max_slot = result["max_slot"]
+    start_slot = 0
+    current_value = participant_activity_text(schedule.get(0, ""))
+
+    for slot in range(1, max_slot + 1):
+        value = participant_activity_text(schedule.get(slot, "")) if slot < max_slot else None
+
+        if value != current_value:
+            ws.cell(row=row, column=1, value=participant_time_range(inputs, start_slot, slot))
+            ws.cell(row=row, column=2, value=current_value)
+
+            for column in range(1, 3):
+                cell = ws.cell(row=row, column=column)
+                cell.font = Font(name=FONT_NAME)
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                cell.border = border
+
+            row += 1
+            start_slot = slot
+            current_value = value
+
+    ws.column_dimensions["A"].width = 22
+    ws.column_dimensions["B"].width = 38
+
+    for row_number in range(1, row):
+        ws.row_dimensions[row_number].height = 24
+
+    ws.sheet_view.showGridLines = False
+
+
 def write_schedule_sheet(workbook, inputs, result, sheet_title="Assessor Schedule", hide_score=False, participant_filter=None):
     ws = workbook.active if sheet_title == "Assessor Schedule" else workbook.create_sheet(sheet_title)
     ws.title = sheet_title
     ws.sheet_view.showGridLines = False
+
+    if participant_filter is not None:
+        write_compact_participant_sheet(ws, inputs, result, participant_filter)
+        return
 
     if participant_filter is not None:
         display_candidates = [participant_filter]
