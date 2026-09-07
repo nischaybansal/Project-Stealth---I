@@ -249,7 +249,7 @@ st.sidebar.markdown("### 💾 Projects")
 st.sidebar.caption("Save a design once, reload it later, change only the numbers.")
 
 projects = load_projects()
-st.sidebar.text_input("Project name", key="project_name", placeholder="e.g. BPCL Senior DC")
+st.sidebar.text_input("Project name", key="project_name", placeholder="e.g. Project Name DC")
 if st.sidebar.button("💾 Save project", use_container_width=True):
     name = (st.session_state.get("project_name") or "").strip()
     if not name:
