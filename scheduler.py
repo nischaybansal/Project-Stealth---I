@@ -38,6 +38,9 @@ ALLOWED_LUNCH_MINUTES = (30, 45, 60)
 # placed for groups or assessors and the Assessor Lunches sheet is omitted.
 LUNCH_ENABLED = True
 
+# Whether everyone breaks at the same moment rather than groups staggering.
+LUNCH_TOGETHER = False
+
 
 def set_lunch_minutes(minutes):
     """Set the length of the lunch block (30, 45 or 60 minutes).
@@ -61,6 +64,21 @@ def set_lunch_enabled(enabled):
 
     LUNCH_ENABLED = bool(enabled)
     return LUNCH_ENABLED
+
+
+def set_lunch_together(together):
+    """Require every participant and assessor to break at the same minute.
+
+    The window is collapsed to a single start time by the caller, so the only
+    lunch the engines can place is the shared one. This is a hard constraint:
+    the rest of the day moves around it rather than the lunch sliding, and a
+    day that cannot clear that slot fails loudly instead of quietly giving
+    someone a different lunch.
+    """
+    global LUNCH_TOGETHER
+
+    LUNCH_TOGETHER = bool(together)
+    return LUNCH_TOGETHER
 # How many lunch-placement combinations the refinement pass may try.
 LUNCH_REFINEMENT_LIMIT = 64
 
@@ -810,6 +828,8 @@ def reserve_assessor_lunches_for_day(assessor_busy, inputs, day, assessor_lunche
         if not assessor_has_work_on_day(assessor_busy, assessor, day, inputs):
             continue
 
+        placed = False
+
         for lunch_start in lunch_start_candidates(day, inputs):
             lunch_end = lunch_start + lunch_slots()
 
@@ -823,7 +843,15 @@ def reserve_assessor_lunches_for_day(assessor_busy, inputs, day, assessor_lunche
                     "start_slot": lunch_start,
                     "end_slot": lunch_end,
                 })
+                placed = True
                 break
+
+        if not placed and LUNCH_TOGETHER:
+            raise ValueError(
+                f"{assessor_code(assessor)} is running an exercise at the shared lunch "
+                f"time on Day {day + 1}, so everyone cannot break together. Move the "
+                f"lunch time, shorten it, or let groups stagger."
+            )
         else:
             raise ValueError(f"Could not reserve lunch for {assessor_code(assessor)} on Day {day + 1}.")
 
@@ -1351,14 +1379,17 @@ def write_schedule_sheet(workbook, inputs, result, sheet_title="Assessor Schedul
     else:
         integration_text = ""
 
-    if LUNCH_ENABLED:
+    if not LUNCH_ENABLED:
+        lunch_text = "Lunch: none | "
+    elif LUNCH_TOGETHER:
+        start = time_text_from_minute(lunch_window_start_minute(inputs))
+        lunch_text = f"Lunch: {LUNCH_MINUTES} min, all together at {start} | "
+    else:
         lunch_text = (
             f"Lunch: {LUNCH_MINUTES} min | "
             f"Lunch Window: {lunch_window_text(inputs)} | "
             f"Ideal Lunch: {lunch_target_text(inputs)} | "
         )
-    else:
-        lunch_text = "Lunch: none | "
 
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=used_max_column)
     ws["A2"] = (
@@ -1713,10 +1744,13 @@ def write_summary_front_sheet(workbook, inputs, result):
     # The day
     band(layout["day_header"], "THE DAY", section, "FFFFFF", 11, 22)
     include_day = result["total_days"] > 1
-    if LUNCH_ENABLED:
-        lunch_value = f"{LUNCH_MINUTES} min, inside {lunch_window_text(inputs)}"
-    else:
+    if not LUNCH_ENABLED:
         lunch_value = "Not scheduled"
+    elif LUNCH_TOGETHER:
+        start = time_text_from_minute(lunch_window_start_minute(inputs))
+        lunch_value = f"{LUNCH_MINUTES} min, everyone together at {start}"
+    else:
+        lunch_value = f"{LUNCH_MINUTES} min, inside {lunch_window_text(inputs)}"
     integration_minutes = inputs.get("integration_minutes", 0)
     integration_value = (
         f"{integration_minutes} min, after the assessments" if integration_minutes else "Not scheduled"
@@ -2168,6 +2202,8 @@ def find_fastest_schedule(inputs):
     except ImportError:
         solver = None
 
+    solver_error = None
+
     if solver is not None and not inputs.get("force_legacy_search"):
         try:
             best_inputs, best_result = solver.solve_schedule(inputs)
@@ -2178,11 +2214,20 @@ def find_fastest_schedule(inputs):
             )
             return best_inputs, best_result
         except ValueError as error:
+            solver_error = str(error)
             print(f"Solver could not fit this day ({error}); trying the legacy search.")
         except Exception as error:  # never let the solver break the tool
             print(f"Solver unavailable ({error}); using the legacy search.")
 
-    return legacy_find_fastest_schedule(inputs)
+    try:
+        return legacy_find_fastest_schedule(inputs)
+    except ValueError as error:
+        # The legacy search only ever reports that it found nothing, which says
+        # none of why. The solver usually knows, so pass its reason on instead
+        # of the fallback's shrug.
+        if solver_error:
+            raise ValueError(solver_error) from error
+        raise
 
 
 def legacy_find_fastest_schedule(inputs):

@@ -69,11 +69,24 @@ def _build_model(inputs, groups, tools, assignments, horizon, max_spread_slots,
     if window is None:
         # With lunch switched off there is no window to find, which is not an
         # error - the day simply runs straight through.
+        if S.LUNCH_ENABLED and S.LUNCH_TOGETHER:
+            start = S.time_text_from_minute(S.lunch_window_start_minute(inputs))
+            raise ValueError(
+                f"A {S.LUNCH_MINUTES}-minute shared lunch at {start} does not fit inside "
+                f"the day. Move the lunch time, shorten it, or extend the day."
+            )
         if S.LUNCH_ENABLED:
             raise ValueError("No lunch window fits inside the day.")
         lunch_earliest, lunch_latest = 0, 0
     else:
         lunch_earliest, lunch_latest = window
+
+    # One shared start variable when everyone breaks together, so the model
+    # cannot produce a schedule where the lunches merely happen to line up --
+    # they are the same lunch, and the day is built around it.
+    shared_lunch_start = None
+    if lunch_len > 0 and S.LUNCH_TOGETHER:
+        shared_lunch_start = model.NewIntVar(lunch_earliest, lunch_latest, "lunch_all")
 
     starts = {}
     blocks = {}
@@ -117,7 +130,8 @@ def _build_model(inputs, groups, tools, assignments, horizon, max_spread_slots,
     group_lunch = {}
     for group in groups:
         if lunch_len > 0:
-            lunch_start = model.NewIntVar(lunch_earliest, lunch_latest, f"gl{group['index']}")
+            lunch_start = shared_lunch_start if shared_lunch_start is not None else (
+                model.NewIntVar(lunch_earliest, lunch_latest, f"gl{group['index']}"))
             lunch_end = model.NewIntVar(0, horizon, f"gle{group['index']}")
             lunch_interval = model.NewIntervalVar(lunch_start, lunch_len, lunch_end, f"gli{group['index']}")
             group_lunch[group["index"]] = (lunch_start, lunch_end)
@@ -129,7 +143,8 @@ def _build_model(inputs, groups, tools, assignments, horizon, max_spread_slots,
     assessor_lunch = {}
     for assessor in range(inputs["assessors"]):
         if lunch_len > 0:
-            lunch_start = model.NewIntVar(lunch_earliest, lunch_latest, f"al{assessor}")
+            lunch_start = shared_lunch_start if shared_lunch_start is not None else (
+                model.NewIntVar(lunch_earliest, lunch_latest, f"al{assessor}"))
             lunch_end = model.NewIntVar(0, horizon, f"ale{assessor}")
             lunch_interval = model.NewIntervalVar(lunch_start, lunch_len, lunch_end, f"ali{assessor}")
             assessor_lunch[assessor] = (lunch_start, lunch_end)

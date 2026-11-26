@@ -15,6 +15,7 @@ except ImportError:  # the app still works on the legacy engine
 
 from scheduler import (
     ALLOWED_LUNCH_MINUTES,
+    set_lunch_together,
     ALLOWED_SLOT_MINUTES,
     OVERRUN_GRACE_MINUTES,
     WIDENED_SEARCH_LIMIT,
@@ -69,6 +70,8 @@ def default_config():
         "file_name": "DC_Schedule",
         "lunch_on": True,
         "lunch_minutes": 30,
+        "lunch_together": False,
+        "lunch_time": "13:00",
         "lunch_start": "12:00",
         "lunch_end": "16:00",
         "integration_on": False,
@@ -343,14 +346,21 @@ if step == "1 · Setup":
             horizontal=True,
             format_func=lambda value: f"{value} minutes",
         )
-        st.caption(f"A single {cfg['lunch_minutes']}-minute break is placed inside the window below. "
-                   f"Keep the window tight (just the {cfg['lunch_minutes']} minutes) to send everyone "
-                   "to lunch together, or widen it to let groups stagger — one preps while others eat.")
-        lc1, lc2 = st.columns(2)
-        with lc1:
-            txt("Window start", "lunch_start", cfg, "lunch_start")
-        with lc2:
-            txt("Window end", "lunch_end", cfg, "lunch_end")
+        together = tog("Everyone breaks together", "lunch_together", cfg, "lunch_together")
+
+        if together:
+            st.caption("Every participant and assessor stops at the same moment. The rest of the "
+                       "day is built around it, so a packed day may finish later — or refuse to "
+                       "fit at all, in which case move the time or let groups stagger.")
+            txt("Lunch time", "lunch_time", cfg, "lunch_time")
+        else:
+            st.caption(f"A single {cfg['lunch_minutes']}-minute break is placed inside the window "
+                       "below. Groups may stagger — one preps while the others eat.")
+            lc1, lc2 = st.columns(2)
+            with lc1:
+                txt("Window start", "lunch_start", cfg, "lunch_start")
+            with lc2:
+                txt("Window end", "lunch_end", cfg, "lunch_end")
     else:
         st.caption("No lunch break is scheduled — the day runs straight through and the Assessor "
                    "Lunches sheet is left out of the workbook.")
@@ -492,18 +502,30 @@ elif step == "3 · Review":
 
         lunch_on = bool(cfg.get("lunch_on", True))
         lunch_minutes = int(cfg.get("lunch_minutes", 30))
-        lunch_start_dt = parse_time(cfg["lunch_start"], "Lunch window start")
-        lunch_end_dt = parse_time(cfg["lunch_end"], "Lunch window end")
+        lunch_together = lunch_on and bool(cfg.get("lunch_together", False))
 
-        if lunch_on and minute_of(lunch_end_dt) - minute_of(lunch_start_dt) < lunch_minutes:
-            st.error(f"The lunch window must be at least {lunch_minutes} minutes wide to fit a "
-                     f"{lunch_minutes}-minute lunch.")
-            st.stop()
+        if lunch_together:
+            # A shared lunch is a window exactly one lunch wide: there is only
+            # one start the engines can choose, so everyone lands on it.
+            lunch_window_start = minute_of(parse_time(cfg["lunch_time"], "Lunch time"))
+            lunch_window_end = lunch_window_start + lunch_minutes
+            if lunch_window_end > minute_of(end_dt):
+                st.error(f"A {lunch_minutes}-minute lunch at {cfg['lunch_time']} would run past "
+                         f"End time. Move it earlier or shorten it.")
+                st.stop()
+        else:
+            lunch_window_start = minute_of(parse_time(cfg["lunch_start"], "Lunch window start"))
+            lunch_window_end = minute_of(parse_time(cfg["lunch_end"], "Lunch window end"))
+            if lunch_on and lunch_window_end - lunch_window_start < lunch_minutes:
+                st.error(f"The lunch window must be at least {lunch_minutes} minutes wide to fit a "
+                         f"{lunch_minutes}-minute lunch.")
+                st.stop()
 
         # Apply the chosen granularity before anything is converted to slots.
         slot_minutes = int(cfg.get("slot_minutes", DEFAULT_SLOT_MINUTES))
         set_slot_minutes(slot_minutes)
         set_lunch_enabled(lunch_on)
+        set_lunch_together(lunch_together)
         if lunch_on:
             set_lunch_minutes(lunch_minutes)
 
@@ -554,11 +576,19 @@ elif step == "3 · Review":
             "participant_names": [""] * candidates,
             "lunch_on": lunch_on,
             "lunch_minutes": lunch_minutes if lunch_on else 0,
-            "lunch_window_start_minute": minute_of(lunch_start_dt),
-            "lunch_window_end_minute": minute_of(lunch_end_dt),
+            "lunch_together": lunch_together,
+            "lunch_window_start_minute": lunch_window_start,
+            "lunch_window_end_minute": lunch_window_end,
             "integration_minutes": integration_minutes,
             "secondary_tools": secondary_tools,
         }
+
+        if not lunch_on:
+            lunch_card = "Off"
+        elif lunch_together:
+            lunch_card = f"{lunch_minutes} min, all together at {cfg['lunch_time']}"
+        else:
+            lunch_card = f'{lunch_minutes} min, {cfg["lunch_start"]}–{cfg["lunch_end"]}'
 
         permutation_count = estimate_permutations(candidates, assessors, tool_count)
         mapping_note = "Manual — secondary: " + ", ".join(secondary_tools) if secondary_tools else "Automatic"
@@ -569,8 +599,7 @@ elif step == "3 · Review":
         m3.metric("Integration", f"{integration_minutes} min" if integration_minutes else "Off")
 
         st.markdown(
-            f'<div class="card">Lunch '
-            f'<b>{str(lunch_minutes) + " min, " + cfg["lunch_start"] + "–" + cfg["lunch_end"] if lunch_on else "Off"}</b>'
+            f'<div class="card">Lunch <b>{lunch_card}</b>'
             f' &nbsp;•&nbsp; Mapping: <b>{mapping_note}</b>'
             f' &nbsp;•&nbsp; Participants <b>{candidates}</b>,'
             f' Assessors <b>{assessors}</b> (ratio 1:{ratio}),'

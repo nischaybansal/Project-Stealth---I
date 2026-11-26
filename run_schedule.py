@@ -22,6 +22,7 @@ Useful extras:
     --lunch 12:00-13:30   window the lunch block is placed inside
     --lunch-minutes 45    lunch length: 30, 45 or 60. Default 30
     --no-lunch            no lunch break at all
+    --lunch-together 13:00  everyone breaks at exactly this time
     --context 30          context setting minutes
     --secondary "Role Play"   tool(s) the secondary assessor runs (repeatable)
     --out MySchedule.xlsx     output file name
@@ -155,6 +156,8 @@ def main(argv=None):
                         help="length of the lunch block. Default 30.")
     parser.add_argument("--no-lunch", action="store_true",
                         help="run the day straight through with no lunch break")
+    parser.add_argument("--lunch-together", metavar="HH:MM",
+                        help="everyone breaks at this exact time (overrides --lunch)")
     parser.add_argument("--slot", type=int, default=5, choices=S.ALLOWED_SLOT_MINUTES)
     parser.add_argument("--tool", action="append", required=True,
                         help="NAME:instr,prep,exec,score (repeat per tool)")
@@ -168,6 +171,8 @@ def main(argv=None):
 
     S.set_slot_minutes(args.slot)
     S.set_lunch_enabled(not args.no_lunch)
+    together = bool(args.lunch_together) and not args.no_lunch
+    S.set_lunch_together(together)
     if not args.no_lunch:
         S.set_lunch_minutes(args.lunch_minutes)
 
@@ -182,14 +187,19 @@ def main(argv=None):
     if end_minute <= start_minute:
         raise ValueError("--end must be after --start")
 
-    if "-" not in args.lunch:
-        raise ValueError("--lunch must look like 12:00-13:30")
-    lunch_from, lunch_to = args.lunch.split("-", 1)
-    lunch_start = minutes_of(lunch_from, "--lunch start")
-    lunch_end = minutes_of(lunch_to, "--lunch end")
-    if not args.no_lunch and lunch_end - lunch_start < S.LUNCH_MINUTES:
-        raise ValueError(
-            f"--lunch window must be at least {S.LUNCH_MINUTES} minutes wide")
+    if together:
+        # One lunch-long window leaves the engines exactly one start to pick.
+        lunch_start = minutes_of(args.lunch_together, "--lunch-together")
+        lunch_end = lunch_start + S.LUNCH_MINUTES
+    else:
+        if "-" not in args.lunch:
+            raise ValueError("--lunch must look like 12:00-13:30")
+        lunch_from, lunch_to = args.lunch.split("-", 1)
+        lunch_start = minutes_of(lunch_from, "--lunch start")
+        lunch_end = minutes_of(lunch_to, "--lunch end")
+        if not args.no_lunch and lunch_end - lunch_start < S.LUNCH_MINUTES:
+            raise ValueError(
+                f"--lunch window must be at least {S.LUNCH_MINUTES} minutes wide")
 
     # The rendered day holds the assessments, the overrun buffer and then the
     # integration that follows them.
@@ -215,6 +225,7 @@ def main(argv=None):
         "assessor_names": [""] * assessors,
         "participant_names": [""] * args.participants,
         "lunch_on": not args.no_lunch,
+        "lunch_together": together,
         "lunch_minutes": 0 if args.no_lunch else args.lunch_minutes,
         "lunch_window_start_minute": lunch_start,
         "lunch_window_end_minute": lunch_end,
