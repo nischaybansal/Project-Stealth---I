@@ -3,6 +3,8 @@ from copy import copy
 from datetime import datetime
 from itertools import permutations, product
 import math
+import re
+import zipfile
 
 from openpyxl import Workbook
 from openpyxl.cell.cell import MergedCell
@@ -1864,6 +1866,97 @@ def write_summary_front_sheet(workbook, inputs, result):
     ws.freeze_panes = "A3"
 
 
+def formula_display_values(workbook):
+    """What each name formula currently evaluates to.
+
+    Every formula cell stores two things: the formula and its last computed
+    result. openpyxl has no calculation engine, so it writes the formula and
+    leaves the result empty. Excel recalculates on open and fills it in, but
+    a viewer that only reads the stored result - a file preview, Quick Look,
+    Google Sheets, Excel Online - shows an empty cell instead of "P1". The
+    formulas here have exactly two shapes, so their results can be worked out
+    directly and written into the file.
+    """
+    summary = workbook[SUMMARY_SHEET]
+    pattern = re.compile(r'^=IF\(Summary!\$B\$(\d+)="","([^"]*)",(.*)\)$')
+    values = {}
+
+    for index, worksheet in enumerate(workbook.worksheets):
+        for row in worksheet.iter_rows():
+            for cell in row:
+                if not isinstance(cell.value, str) or not cell.value.startswith("=IF("):
+                    continue
+
+                match = pattern.match(cell.value)
+                if match is None:
+                    continue
+
+                source_row, when_blank, when_named = match.groups()
+                name = (summary.cell(row=int(source_row), column=2).value or "")
+                name = str(name).strip()
+
+                if not name:
+                    text = when_blank
+                elif when_named.startswith('"'):
+                    # '"P1 - "&Summary!$B$33' -> the literal prefix, then the name.
+                    text = when_named.split('"')[1] + name
+                else:
+                    text = name
+
+                values.setdefault(index, {})[cell.coordinate] = text
+
+    return values
+
+
+def write_formula_cache(path, values):
+    """Store each formula's result in the saved file alongside the formula."""
+    if not values:
+        return
+
+    with zipfile.ZipFile(path) as archive:
+        contents = {item.filename: archive.read(item.filename) for item in archive.infolist()}
+
+    workbook_xml = contents["xl/workbook.xml"].decode("utf-8")
+    rels_xml = contents["xl/_rels/workbook.xml.rels"].decode("utf-8")
+    relation_ids = re.findall(r'<sheet [^>]*r:id="([^"]+)"', workbook_xml)
+    targets = dict(re.findall(r'Id="([^"]+)"[^>]*?Target="([^"]+)"', rels_xml))
+    targets.update(
+        {rid: target
+         for target, rid in re.findall(r'Target="([^"]+)"[^>]*?Id="([^"]+)"', rels_xml)}
+    )
+
+    for index, cells in values.items():
+        if index >= len(relation_ids):
+            continue
+
+        # Targets are written absolute ("/xl/worksheets/sheet2.xml") by
+        # openpyxl but the format allows them relative to xl/, so handle both.
+        target = targets[relation_ids[index]]
+        name = target.lstrip("/") if target.startswith("/") else "xl/" + target
+        if name not in contents:
+            raise ValueError(f"Cannot find worksheet {name} inside {path}.")
+
+        sheet_xml = contents[name].decode("utf-8")
+
+        for coordinate, text in cells.items():
+            escaped = (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+            cell_pattern = re.compile(
+                r'<c r="%s"([^>]*)>(<f>.*?</f>)(?:<v>.*?</v>)?</c>' % coordinate, re.S
+            )
+
+            def replace(match, escaped=escaped):
+                attributes = re.sub(r'\s*t="[^"]*"', "", match.group(1))
+                return f'<c r="{coordinate}"{attributes} t="str">{match.group(2)}<v>{escaped}</v></c>'
+
+            sheet_xml = cell_pattern.sub(replace, sheet_xml, count=1)
+
+        contents[name] = sheet_xml.encode("utf-8")
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for filename, data in contents.items():
+            archive.writestr(filename, data)
+
+
 def create_excel(inputs, result, output_file=OUTPUT_FILE):
     validate_schedule(result, inputs)
     workbook = Workbook()
@@ -1887,6 +1980,8 @@ def create_excel(inputs, result, output_file=OUTPUT_FILE):
         write_assessor_lunch_sheet(workbook, inputs, result)
     apply_workbook_template(workbook)
 
+    display_values = formula_display_values(workbook)
+
     try:
         workbook.save(output_file)
     except PermissionError:
@@ -1894,6 +1989,8 @@ def create_excel(inputs, result, output_file=OUTPUT_FILE):
             f"\nCannot save '{output_file}' because the file is open in Excel.\n"
             "Please close it and run the scheduler again."
         )
+
+    write_formula_cache(output_file, display_values)
 
 
 def print_warnings(result):
