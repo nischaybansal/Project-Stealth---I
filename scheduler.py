@@ -1308,8 +1308,19 @@ def write_compact_participant_sheet(ws, inputs, result, participant):
         value = participant_activity_text(schedule.get(slot, "")) if slot < max_slot else None
 
         if value != current_value:
-            ws.cell(row=row, column=1, value=participant_time_range(inputs, start_slot, slot))
-            ws.cell(row=row, column=2, value=current_value)
+            # The block that trails the participant's last exercise is not a
+            # break - their assessors still have scoring and the other groups
+            # are still running, but this participant is finished. Saying
+            # "Break" until the day's end reads as "wait here".
+            finished = slot == max_slot and current_value == "Break"
+
+            if finished:
+                label = participant_clock_text(minute_for_slot(start_slot, inputs))
+                ws.cell(row=row, column=1, value=label)
+                ws.cell(row=row, column=2, value="End of day")
+            else:
+                ws.cell(row=row, column=1, value=participant_time_range(inputs, start_slot, slot))
+                ws.cell(row=row, column=2, value=current_value)
 
             for column in range(1, 3):
                 cell = ws.cell(row=row, column=column)
