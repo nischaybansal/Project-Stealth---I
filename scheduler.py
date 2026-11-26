@@ -32,6 +32,35 @@ def set_slot_minutes(minutes):
     SLOT_MINUTES = minutes
     return SLOT_MINUTES
 LUNCH_MINUTES = 30
+ALLOWED_LUNCH_MINUTES = (30, 45, 60)
+
+# Whether the day has a lunch break at all. Switched off, no lunch block is
+# placed for groups or assessors and the Assessor Lunches sheet is omitted.
+LUNCH_ENABLED = True
+
+
+def set_lunch_minutes(minutes):
+    """Set the length of the lunch block (30, 45 or 60 minutes).
+
+    The block is contiguous and is placed inside the configured lunch window,
+    so the window must be at least this wide.
+    """
+    global LUNCH_MINUTES
+
+    if minutes not in ALLOWED_LUNCH_MINUTES:
+        allowed = ", ".join(str(value) for value in ALLOWED_LUNCH_MINUTES)
+        raise ValueError(f"Lunch must be one of: {allowed} minutes.")
+
+    LUNCH_MINUTES = minutes
+    return LUNCH_MINUTES
+
+
+def set_lunch_enabled(enabled):
+    """Turn the lunch break on or off for the whole day."""
+    global LUNCH_ENABLED
+
+    LUNCH_ENABLED = bool(enabled)
+    return LUNCH_ENABLED
 # How many lunch-placement combinations the refinement pass may try.
 LUNCH_REFINEMENT_LIMIT = 64
 
@@ -160,6 +189,8 @@ def collect_optional_names(count, label, prefix):
 
 
 def lunch_slots():
+    if not LUNCH_ENABLED:
+        return 0
     return round_up_to_slots(LUNCH_MINUTES)
 
 
@@ -241,6 +272,86 @@ def collect_inputs():
         "assessor_names": assessor_names,
         "participant_names": participant_names,
     }
+
+
+# The first sheet of the workbook. It carries the day's summary and the only
+# place names are typed; every other sheet reads those names by formula, so a
+# name typed once appears everywhere and a blank falls back to the code.
+SUMMARY_SHEET = "Summary"
+
+
+def summary_layout(inputs):
+    """Row numbers on the Summary sheet.
+
+    Both the sheet writer and the formulas that point at it derive their rows
+    from here, so the two can never drift apart.
+    """
+    day_header = 4
+    day_first = day_header + 1
+    day_rows = 8
+
+    people_header = day_first + day_rows + 1
+    people_first = people_header + 1
+    people_rows = 3
+
+    tools_header = people_first + people_rows + 1
+    tools_table_header = tools_header + 1
+    tools_first = tools_table_header + 1
+
+    names_header = tools_first + len(inputs["tools"]) + 1
+    names_caption = names_header + 1
+
+    assessor_header = names_caption + 2
+    assessor_first = assessor_header + 1
+
+    participant_header = assessor_first + inputs["assessors"] + 1
+    participant_first = participant_header + 1
+
+    return {
+        "day_header": day_header,
+        "day_first": day_first,
+        "people_header": people_header,
+        "people_first": people_first,
+        "tools_header": tools_header,
+        "tools_table_header": tools_table_header,
+        "tools_first": tools_first,
+        "names_header": names_header,
+        "names_caption": names_caption,
+        "assessor_header": assessor_header,
+        "assessor_first": assessor_first,
+        "participant_header": participant_header,
+        "participant_first": participant_first,
+        "last_row": participant_first + inputs["candidates"] - 1,
+    }
+
+
+def summary_assessor_cell(index, inputs):
+    return f"{SUMMARY_SHEET}!$B${summary_layout(inputs)['assessor_first'] + index}"
+
+
+def summary_participant_cell(participant, inputs):
+    row = summary_layout(inputs)["participant_first"] + participant - 1
+    return f"{SUMMARY_SHEET}!$B${row}"
+
+
+def name_only_formula(reference):
+    """The typed name, or nothing at all when the cell is still blank."""
+    return f'=IF({reference}="","",{reference})'
+
+
+def code_and_name_formula(code, reference):
+    """'A1' on its own until a name is typed, then 'A1 - Name'."""
+    return f'=IF({reference}="","{code}","{code} - "&{reference})'
+
+
+def assessor_label_formula(index, inputs):
+    return code_and_name_formula(assessor_code(index), summary_assessor_cell(index, inputs))
+
+
+def participant_label_formula(participant, inputs):
+    return code_and_name_formula(
+        participant_code(participant), summary_participant_cell(participant, inputs)
+    )
 
 
 def participant_code(number):
@@ -455,6 +566,9 @@ def lunch_window_end_minute(inputs):
 
 
 def lunch_window_slot_range(day, inputs):
+    if not LUNCH_ENABLED:
+        return None
+
     window_start = max(inputs["start_minute"], lunch_window_start_minute(inputs))
     window_end = min(inputs["end_minute"], lunch_window_end_minute(inputs))
 
@@ -558,6 +672,9 @@ def place_group_lunch(schedule, group, start_slot, inputs):
 
 
 def schedule_group_lunch_in_gap(schedule, group, gap_start, gap_end, inputs):
+    if not LUNCH_ENABLED:
+        return False
+
     if gap_start >= gap_end:
         return False
 
@@ -584,6 +701,9 @@ def schedule_group_lunch_in_gap(schedule, group, gap_start, gap_end, inputs):
 
 
 def should_lunch_before_tool(group, tool_start, tool_end, inputs):
+    if not LUNCH_ENABLED:
+        return False
+
     day = day_index(tool_start, inputs)
 
     if day in group["lunch_days"]:
@@ -634,6 +754,9 @@ def group_has_work_on_day(schedule, group, day, inputs):
 
 
 def schedule_missing_group_lunches(schedule, groups, inputs, total_days):
+    if not LUNCH_ENABLED:
+        return
+
     for day in range(total_days):
         for group in groups:
             if day in group["lunch_days"]:
@@ -677,6 +800,9 @@ def assessor_has_work_on_day(assessor_busy, assessor, day, inputs):
 
 
 def reserve_assessor_lunches_for_day(assessor_busy, inputs, day, assessor_lunches):
+    if not LUNCH_ENABLED:
+        return
+
     for assessor in range(inputs["assessors"]):
         if assessor_has_lunch(assessor_busy, assessor, day, inputs):
             continue
@@ -1100,6 +1226,23 @@ def participant_activity_text(value):
     return value
 
 
+def last_participant_slot(result, max_slot, candidates):
+    """The slot the day ends on for participants, i.e. before integration.
+
+    Integration is an assessor-only session and must not appear on anything a
+    participant sees, so participant-facing sheets stop where the assessments
+    (and any lunch) stop. The trailing integration block is trimmed by value
+    rather than by arithmetic, so it works whichever engine built the schedule.
+    """
+    while max_slot > 0 and all(
+        result["schedule"][candidate].get(max_slot - 1) == "Integration"
+        for candidate in candidates
+    ):
+        max_slot -= 1
+
+    return max_slot
+
+
 def write_compact_participant_sheet(ws, inputs, result, participant):
     dark_blue = PatternFill("solid", fgColor="002060")
     green = PatternFill("solid", fgColor="A9D18E")
@@ -1110,7 +1253,7 @@ def write_compact_participant_sheet(ws, inputs, result, participant):
     ws["A1"] = "Development Centre"
 
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=2)
-    ws["A2"] = participant_display_name(participant, inputs)
+    ws["A2"] = participant_label_formula(participant, inputs)
 
     ws["A3"] = "Time"
     ws["B3"] = "Activity"
@@ -1127,7 +1270,7 @@ def write_compact_participant_sheet(ws, inputs, result, participant):
 
     row = 4
     schedule = result["schedule"][participant]
-    max_slot = result["max_slot"]
+    max_slot = last_participant_slot(result, result["max_slot"], [participant])
     start_slot = 0
     current_value = participant_activity_text(schedule.get(0, ""))
 
@@ -1158,7 +1301,7 @@ def write_compact_participant_sheet(ws, inputs, result, participant):
 
 
 def write_schedule_sheet(workbook, inputs, result, sheet_title="Assessor Schedule", hide_score=False, participant_filter=None):
-    ws = workbook.active if sheet_title == "Assessor Schedule" else workbook.create_sheet(sheet_title)
+    ws = workbook.create_sheet(sheet_title)
     ws.title = sheet_title
     ws.sheet_view.showGridLines = False
 
@@ -1174,7 +1317,7 @@ def write_schedule_sheet(workbook, inputs, result, sheet_title="Assessor Schedul
     schedule_column_count = len(display_candidates) + 1
     time_repeat_column = schedule_column_count + 1
     mapping_start_column = schedule_column_count + 3
-    mapping_column_count = len(inputs["tools"]) + 2
+    mapping_column_count = len(inputs["tools"]) + 3
     mapping_end_column = mapping_start_column + mapping_column_count - 1
 
     show_assessor_mapping = sheet_title == "Assessor Schedule" and participant_filter is None
@@ -1188,6 +1331,8 @@ def write_schedule_sheet(workbook, inputs, result, sheet_title="Assessor Schedul
         used_max_column = time_repeat_column
 
     max_slot = result["max_slot"]
+    if hide_score:
+        max_slot = last_participant_slot(result, max_slot, display_candidates)
     include_day = result["total_days"] > 1
 
     participant_table_start_row = 3 + inputs["assessors"] + 2
@@ -1199,22 +1344,36 @@ def write_schedule_sheet(workbook, inputs, result, sheet_title="Assessor Schedul
 
     tool_names = ", ".join(tool["name"] for tool in inputs["tools"])
     integration_minutes = inputs.get("integration_minutes", 0)
-    integration_text = f"Integration: {integration_minutes} min after End | " if integration_minutes else ""
+    # Integration is an assessor-only session, so it is never named on a
+    # participant-facing sheet.
+    if integration_minutes and not hide_score:
+        integration_text = f"Integration: {integration_minutes} min after End | "
+    else:
+        integration_text = ""
+
+    if LUNCH_ENABLED:
+        lunch_text = (
+            f"Lunch: {LUNCH_MINUTES} min | "
+            f"Lunch Window: {lunch_window_text(inputs)} | "
+            f"Ideal Lunch: {lunch_target_text(inputs)} | "
+        )
+    else:
+        lunch_text = "Lunch: none | "
+
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=used_max_column)
     ws["A2"] = (
         f"Start: {inputs['start_time'].strftime('%H:%M')} | "
         f"Assessments End: {inputs['end_time'].strftime('%H:%M')} | "
         f"Candidates: {inputs['candidates']} | "
         f"Assessors: {inputs['assessors']} | "
-        f"Lunch Window: {lunch_window_text(inputs)} | "
-        f"Ideal Lunch: {lunch_target_text(inputs)} | "
+        f"{lunch_text}"
         f"{integration_text}"
         f"Tools: {tool_names}"
     )
 
     ws.cell(row=3, column=1, value="Time")
     for column, candidate in enumerate(display_candidates, start=2):
-        ws.cell(row=3, column=column, value=participant_code(candidate))
+        ws.cell(row=3, column=column, value=participant_label_formula(candidate, inputs))
     ws.cell(row=3, column=time_repeat_column, value="Time")
 
     for slot in range(max_slot):
@@ -1257,21 +1416,27 @@ def write_schedule_sheet(workbook, inputs, result, sheet_title="Assessor Schedul
 
 
 def write_mapping_box(ws, inputs, result, start_row, start_column):
-    headers = ["Assessors", "Room Name"] + [tool["name"] for tool in inputs["tools"]]
+    headers = ["A.NO", "Assessor Name", "Room Name"] + [tool["name"] for tool in inputs["tools"]]
 
     for offset, header in enumerate(headers):
         ws.cell(row=start_row, column=start_column + offset, value=header)
 
     for assessor_index in range(inputs["assessors"]):
         row = start_row + assessor_index + 1
-        ws.cell(row=row, column=start_column, value=assessor_display_name(assessor_index, inputs["assessor_names"]))
-        ws.cell(row=row, column=start_column + 1, value="")
+        ws.cell(row=row, column=start_column, value=assessor_code(assessor_index))
+        ws.cell(
+            row=row,
+            column=start_column + 1,
+            value=name_only_formula(summary_assessor_cell(assessor_index, inputs)),
+        )
+        # Room is decided on the day, so it is left for someone to write in.
+        ws.cell(row=row, column=start_column + 2, value="")
 
         for tool in inputs["tools"]:
             participants = sorted(set(result["assessor_mapping"][assessor_index][tool["index"]]))
             ws.cell(
                 row=row,
-                column=start_column + 2 + tool["index"],
+                column=start_column + 3 + tool["index"],
                 value=",".join(str(participant) for participant in participants),
             )
 
@@ -1283,7 +1448,11 @@ def write_participant_table(ws, inputs, start_row, start_column):
     for participant in range(1, inputs["candidates"] + 1):
         row = start_row + participant
         ws.cell(row=row, column=start_column, value=participant_code(participant))
-        ws.cell(row=row, column=start_column + 1, value=inputs["participant_names"][participant - 1])
+        ws.cell(
+            row=row,
+            column=start_column + 1,
+            value=name_only_formula(summary_participant_cell(participant, inputs)),
+        )
 
 
 def format_schedule_sheet(ws, display_candidates, max_slot, used_max_column, used_max_row, time_repeat_column):
@@ -1339,7 +1508,7 @@ def format_mapping_box(ws, inputs, start_row, start_column):
     header_fill = PatternFill("solid", fgColor="5B6770")
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    column_count = len(inputs["tools"]) + 2
+    column_count = len(inputs["tools"]) + 3
 
     for offset in range(column_count):
         cell = ws.cell(row=start_row, column=start_column + offset)
@@ -1357,7 +1526,7 @@ def format_mapping_box(ws, inputs, start_row, start_column):
             cell.border = border
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    widths = [26, 18] + [24] * len(inputs["tools"])
+    widths = [10, 26, 18] + [24] * len(inputs["tools"])
     for offset, width in enumerate(widths):
         ws.column_dimensions[get_column_letter(start_column + offset)].width = width
 
@@ -1451,7 +1620,7 @@ def write_assessor_lunch_sheet(workbook, inputs, result):
     for row, item in enumerate(lunches, start=2):
         include_day = result["total_days"] > 1
         ws.cell(row=row, column=1, value=f"Day {item['day'] + 1}")
-        ws.cell(row=row, column=2, value=assessor_display_name(item["assessor"], inputs["assessor_names"]))
+        ws.cell(row=row, column=2, value=assessor_label_formula(item["assessor"], inputs))
         ws.cell(row=row, column=3, value=format_time(inputs, item["start_slot"], include_day))
         ws.cell(row=row, column=4, value=format_boundary_time(inputs, item["end_slot"], include_day))
 
@@ -1494,10 +1663,178 @@ def apply_workbook_template(workbook):
                 cell.font = new_font
 
 
+def write_summary_front_sheet(workbook, inputs, result):
+    """The workbook's first page: what was scheduled, and where names go in.
+
+    Nothing here is read back by the engine. The two name tables at the bottom
+    are the single place names are entered; the rest of the workbook points at
+    them, so filling one cell renames that person on every sheet.
+    """
+    ws = workbook.active
+    ws.title = SUMMARY_SHEET
+    ws.sheet_view.showGridLines = False
+
+    layout = summary_layout(inputs)
+    banner = PatternFill("solid", fgColor="1F4E78")
+    section = PatternFill("solid", fgColor="5B6770")
+    tint = PatternFill("solid", fgColor="D9EAF7")
+    entry = PatternFill("solid", fgColor="FFF9E0")
+    thin = Side(style="thin", color="808080")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    last_column = 6
+
+    def put(row, column, value):
+        cell = ws.cell(row=row, column=column, value=value)
+        cell.font = Font(name=FONT_NAME)
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+        return cell
+
+    def band(row, text, fill, color, size, height, columns=last_column):
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=columns)
+        cell = put(row, 1, text)
+        cell.fill = fill
+        cell.font = Font(name=FONT_NAME, color=color, bold=True, size=size)
+        cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        ws.row_dimensions[row].height = height
+
+    def pair(row, label, value):
+        left = put(row, 1, label)
+        left.font = Font(name=FONT_NAME, bold=True)
+        left.fill = tint
+        left.border = border
+        right = put(row, 2, value)
+        right.border = border
+        ws.row_dimensions[row].height = 20
+
+    # Banner
+    band(1, "DEVELOPMENT CENTRE  ·  SCHEDULE SUMMARY", banner, "FFFFFF", 16, 34)
+    band(2, ", ".join(tool["name"] for tool in inputs["tools"]), tint, "1F4E78", 11, 22)
+
+    # The day
+    band(layout["day_header"], "THE DAY", section, "FFFFFF", 11, 22)
+    include_day = result["total_days"] > 1
+    if LUNCH_ENABLED:
+        lunch_value = f"{LUNCH_MINUTES} min, inside {lunch_window_text(inputs)}"
+    else:
+        lunch_value = "Not scheduled"
+    integration_minutes = inputs.get("integration_minutes", 0)
+    integration_value = (
+        f"{integration_minutes} min, after the assessments" if integration_minutes else "Not scheduled"
+    )
+    day_values = [
+        ("Day starts", inputs["start_time"].strftime("%H:%M")),
+        ("Assessments end", inputs["end_time"].strftime("%H:%M")),
+        ("Context setting", f"{inputs.get('context_minutes', 0)} min"),
+        ("Lunch", lunch_value),
+        ("Integration", integration_value),
+        ("Time slot size", f"{SLOT_MINUTES} min"),
+        ("Days", str(result["total_days"])),
+        ("Schedule ends", format_boundary_time(inputs, result["max_slot"], include_day)),
+    ]
+    for offset, (label, value) in enumerate(day_values):
+        pair(layout["day_first"] + offset, label, value)
+
+    # People
+    band(layout["people_header"], "PEOPLE", section, "FFFFFF", 11, 22)
+    ratio = inputs.get("assessor_ratio")
+    assessor_value = f"{inputs['assessors']}" + (f"   (1 : {ratio})" if ratio else "")
+    people_values = [
+        ("Participants", str(inputs["candidates"])),
+        ("Assessors", assessor_value),
+        ("Groups", str(len(result["groups"]))),
+    ]
+    for offset, (label, value) in enumerate(people_values):
+        pair(layout["people_first"] + offset, label, value)
+
+    # Tools
+    band(layout["tools_header"], "EXERCISES", section, "FFFFFF", 11, 22)
+    headers = ["Exercise", "Instructions", "Preparation", "Execution", "Scoring", "Total"]
+    for column, header in enumerate(headers, start=1):
+        cell = put(layout["tools_table_header"], column, header)
+        cell.font = Font(name=FONT_NAME, bold=True)
+        cell.fill = tint
+        cell.border = border
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[layout["tools_table_header"]].height = 20
+
+    for offset, tool in enumerate(inputs["tools"]):
+        row = layout["tools_first"] + offset
+        minutes = [
+            slots_to_minutes(tool["instruction_slots"]),
+            slots_to_minutes(tool["preparation_slots"]),
+            slots_to_minutes(tool["execution_slots"]),
+            slots_to_minutes(tool["scoring_slots"]),
+        ]
+        name_cell = put(row, 1, tool["name"])
+        name_cell.font = Font(name=FONT_NAME, bold=True)
+        name_cell.border = border
+        for column, value in enumerate(minutes + [sum(minutes)], start=2):
+            cell = put(row, column, f"{value} min")
+            cell.border = border
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[row].height = 20
+
+    # Names
+    band(layout["names_header"], "NAMES", section, "FFFFFF", 11, 22)
+    band(
+        layout["names_caption"],
+        "Type names in the shaded cells below. Every sheet updates. "
+        "Leave one blank to keep its code.",
+        tint, "1F4E78", 10, 24,
+    )
+
+    def name_table(header_row, code_header, name_header, codes, prefilled):
+        for column, header in enumerate((code_header, name_header), start=1):
+            cell = put(header_row, column, header)
+            cell.font = Font(name=FONT_NAME, color="FFFFFF", bold=True)
+            cell.fill = section
+            cell.border = border
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[header_row].height = 20
+
+        for offset, code in enumerate(codes):
+            row = header_row + 1 + offset
+            code_cell = put(row, 1, code)
+            code_cell.font = Font(name=FONT_NAME, bold=True)
+            code_cell.border = border
+            code_cell.alignment = Alignment(horizontal="center", vertical="center")
+            name_cell = put(row, 2, prefilled[offset])
+            name_cell.fill = entry
+            name_cell.border = border
+            name_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            ws.row_dimensions[row].height = 20
+
+    name_table(
+        layout["assessor_header"], "A.NO", "Assessor Name",
+        [assessor_code(index) for index in range(inputs["assessors"])],
+        [name.strip() for name in inputs["assessor_names"]],
+    )
+    name_table(
+        layout["participant_header"], "P.NO", "Participant Name",
+        [participant_code(participant) for participant in range(1, inputs["candidates"] + 1)],
+        [name.strip() for name in inputs["participant_names"]],
+    )
+
+    widths = [24, 30, 14, 14, 14, 14]
+    for column, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(column)].width = width
+
+    # Printed or saved as PDF, the page should hold the whole summary rather
+    # than slicing the exercise table down the middle.
+    ws.page_setup.orientation = "portrait"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_area = f"A1:F{layout['last_row']}"
+
+    ws.freeze_panes = "A3"
+
+
 def create_excel(inputs, result, output_file=OUTPUT_FILE):
     validate_schedule(result, inputs)
     workbook = Workbook()
 
+    write_summary_front_sheet(workbook, inputs, result)
     write_schedule_sheet(workbook, inputs, result, "Assessor Schedule", hide_score=False)
     write_schedule_sheet(workbook, inputs, result, "Participant Schedule", hide_score=True)
 
@@ -1512,7 +1849,8 @@ def create_excel(inputs, result, output_file=OUTPUT_FILE):
         )
 
     write_summary_sheet(workbook, inputs, result)
-    write_assessor_lunch_sheet(workbook, inputs, result)
+    if LUNCH_ENABLED:
+        write_assessor_lunch_sheet(workbook, inputs, result)
     apply_workbook_template(workbook)
 
     try:

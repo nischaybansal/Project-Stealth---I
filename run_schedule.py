@@ -19,7 +19,9 @@ Useful extras:
     --ratio 2|3|4|5       participants per assessor (default 3)
     --assessors N         override the count the ratio implies
     --slot 5|10|15        time slot size (default 5)
-    --lunch 12:00-13:30   window the 30-minute lunch is placed inside
+    --lunch 12:00-13:30   window the lunch block is placed inside
+    --lunch-minutes 45    lunch length: 30, 45 or 60. Default 30
+    --no-lunch            no lunch break at all
     --context 30          context setting minutes
     --secondary "Role Play"   tool(s) the secondary assessor runs (repeatable)
     --out MySchedule.xlsx     output file name
@@ -148,6 +150,11 @@ def main(argv=None):
     parser.add_argument("--context", type=int, default=30)
     parser.add_argument("--integration", type=int, default=0)
     parser.add_argument("--lunch", default="12:00-13:30")
+    parser.add_argument("--lunch-minutes", type=int, default=30,
+                        choices=S.ALLOWED_LUNCH_MINUTES,
+                        help="length of the lunch block. Default 30.")
+    parser.add_argument("--no-lunch", action="store_true",
+                        help="run the day straight through with no lunch break")
     parser.add_argument("--slot", type=int, default=5, choices=S.ALLOWED_SLOT_MINUTES)
     parser.add_argument("--tool", action="append", required=True,
                         help="NAME:instr,prep,exec,score (repeat per tool)")
@@ -160,6 +167,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     S.set_slot_minutes(args.slot)
+    S.set_lunch_enabled(not args.no_lunch)
+    if not args.no_lunch:
+        S.set_lunch_minutes(args.lunch_minutes)
 
     # The ratio decides how many assessors the day needs; --assessors overrides
     # it for the case where only a fixed number of people are actually free.
@@ -177,8 +187,9 @@ def main(argv=None):
     lunch_from, lunch_to = args.lunch.split("-", 1)
     lunch_start = minutes_of(lunch_from, "--lunch start")
     lunch_end = minutes_of(lunch_to, "--lunch end")
-    if lunch_end - lunch_start < S.LUNCH_MINUTES:
-        raise ValueError("--lunch window must be at least 30 minutes wide")
+    if not args.no_lunch and lunch_end - lunch_start < S.LUNCH_MINUTES:
+        raise ValueError(
+            f"--lunch window must be at least {S.LUNCH_MINUTES} minutes wide")
 
     # The rendered day holds the assessments, the overrun buffer and then the
     # integration that follows them.
@@ -203,6 +214,8 @@ def main(argv=None):
         "tools": tools,
         "assessor_names": [""] * assessors,
         "participant_names": [""] * args.participants,
+        "lunch_on": not args.no_lunch,
+        "lunch_minutes": 0 if args.no_lunch else args.lunch_minutes,
         "lunch_window_start_minute": lunch_start,
         "lunch_window_end_minute": lunch_end,
         "integration_minutes": args.integration,

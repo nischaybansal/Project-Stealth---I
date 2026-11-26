@@ -14,12 +14,15 @@ except ImportError:  # the app still works on the legacy engine
     solver = None
 
 from scheduler import (
+    ALLOWED_LUNCH_MINUTES,
     ALLOWED_SLOT_MINUTES,
     OVERRUN_GRACE_MINUTES,
     WIDENED_SEARCH_LIMIT,
     create_excel,
     find_fastest_schedule,
     group_start_spread,
+    set_lunch_enabled,
+    set_lunch_minutes,
     set_slot_minutes,
 )
 
@@ -64,6 +67,8 @@ def default_config():
         "end_time": "18:00",
         "context_minutes": 30,
         "file_name": "DC_Schedule",
+        "lunch_on": True,
+        "lunch_minutes": 30,
         "lunch_start": "12:00",
         "lunch_end": "16:00",
         "integration_on": False,
@@ -326,15 +331,29 @@ if step == "1 · Setup":
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="section">', unsafe_allow_html=True)
-    st.markdown("### 🍴 Lunch window")
-    st.caption("A 30-minute lunch is placed inside this window. Keep it tight (e.g. 12:00–12:30) to "
-               "send everyone to lunch together, or widen it (e.g. 12:00–13:30) to let groups stagger "
-               "— one preps while others eat.")
-    lc1, lc2 = st.columns(2)
-    with lc1:
-        txt("Window start", "lunch_start", cfg, "lunch_start")
-    with lc2:
-        txt("Window end", "lunch_end", cfg, "lunch_end")
+    st.markdown("### 🍴 Lunch")
+    lunch_on = tog("Break for lunch", "lunch_on", cfg, "lunch_on")
+
+    if lunch_on:
+        st.session_state.setdefault("lunch_minutes", int(cfg["lunch_minutes"]))
+        cfg["lunch_minutes"] = st.radio(
+            "Lunch length",
+            ALLOWED_LUNCH_MINUTES,
+            key="lunch_minutes",
+            horizontal=True,
+            format_func=lambda value: f"{value} minutes",
+        )
+        st.caption(f"A single {cfg['lunch_minutes']}-minute break is placed inside the window below. "
+                   f"Keep the window tight (just the {cfg['lunch_minutes']} minutes) to send everyone "
+                   "to lunch together, or widen it to let groups stagger — one preps while others eat.")
+        lc1, lc2 = st.columns(2)
+        with lc1:
+            txt("Window start", "lunch_start", cfg, "lunch_start")
+        with lc2:
+            txt("Window end", "lunch_end", cfg, "lunch_end")
+    else:
+        st.caption("No lunch break is scheduled — the day runs straight through and the Assessor "
+                   "Lunches sheet is left out of the workbook.")
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="section">', unsafe_allow_html=True)
@@ -471,15 +490,22 @@ elif step == "3 · Review":
             st.error("End time must be after start time.")
             st.stop()
 
+        lunch_on = bool(cfg.get("lunch_on", True))
+        lunch_minutes = int(cfg.get("lunch_minutes", 30))
         lunch_start_dt = parse_time(cfg["lunch_start"], "Lunch window start")
         lunch_end_dt = parse_time(cfg["lunch_end"], "Lunch window end")
-        if minute_of(lunch_end_dt) - minute_of(lunch_start_dt) < 30:
-            st.error("The lunch window must be at least 30 minutes wide.")
+
+        if lunch_on and minute_of(lunch_end_dt) - minute_of(lunch_start_dt) < lunch_minutes:
+            st.error(f"The lunch window must be at least {lunch_minutes} minutes wide to fit a "
+                     f"{lunch_minutes}-minute lunch.")
             st.stop()
 
         # Apply the chosen granularity before anything is converted to slots.
         slot_minutes = int(cfg.get("slot_minutes", DEFAULT_SLOT_MINUTES))
         set_slot_minutes(slot_minutes)
+        set_lunch_enabled(lunch_on)
+        if lunch_on:
+            set_lunch_minutes(lunch_minutes)
 
         tool_count = int(cfg["tool_count"])
         tools = []
@@ -526,6 +552,8 @@ elif step == "3 · Review":
             "tools": tools,
             "assessor_names": [""] * assessors,
             "participant_names": [""] * candidates,
+            "lunch_on": lunch_on,
+            "lunch_minutes": lunch_minutes if lunch_on else 0,
             "lunch_window_start_minute": minute_of(lunch_start_dt),
             "lunch_window_end_minute": minute_of(lunch_end_dt),
             "integration_minutes": integration_minutes,
@@ -541,7 +569,8 @@ elif step == "3 · Review":
         m3.metric("Integration", f"{integration_minutes} min" if integration_minutes else "Off")
 
         st.markdown(
-            f'<div class="card">Lunch window <b>{cfg["lunch_start"]}–{cfg["lunch_end"]}</b>'
+            f'<div class="card">Lunch '
+            f'<b>{str(lunch_minutes) + " min, " + cfg["lunch_start"] + "–" + cfg["lunch_end"] if lunch_on else "Off"}</b>'
             f' &nbsp;•&nbsp; Mapping: <b>{mapping_note}</b>'
             f' &nbsp;•&nbsp; Participants <b>{candidates}</b>,'
             f' Assessors <b>{assessors}</b> (ratio 1:{ratio}),'

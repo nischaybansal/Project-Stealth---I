@@ -67,8 +67,13 @@ def _build_model(inputs, groups, tools, assignments, horizon, max_spread_slots,
 
     window = S.lunch_window_slot_range(0, inputs)
     if window is None:
-        raise ValueError("No lunch window fits inside the day.")
-    lunch_earliest, lunch_latest = window
+        # With lunch switched off there is no window to find, which is not an
+        # error - the day simply runs straight through.
+        if S.LUNCH_ENABLED:
+            raise ValueError("No lunch window fits inside the day.")
+        lunch_earliest, lunch_latest = 0, 0
+    else:
+        lunch_earliest, lunch_latest = window
 
     starts = {}
     blocks = {}
@@ -111,22 +116,24 @@ def _build_model(inputs, groups, tools, assignments, horizon, max_spread_slots,
     # A group does one thing at a time, lunch included.
     group_lunch = {}
     for group in groups:
-        lunch_start = model.NewIntVar(lunch_earliest, lunch_latest, f"gl{group['index']}")
-        lunch_end = model.NewIntVar(0, horizon, f"gle{group['index']}")
-        lunch_interval = model.NewIntervalVar(lunch_start, lunch_len, lunch_end, f"gli{group['index']}")
-        group_lunch[group["index"]] = (lunch_start, lunch_end)
-        group_intervals[group["index"]].append(lunch_interval)
+        if lunch_len > 0:
+            lunch_start = model.NewIntVar(lunch_earliest, lunch_latest, f"gl{group['index']}")
+            lunch_end = model.NewIntVar(0, horizon, f"gle{group['index']}")
+            lunch_interval = model.NewIntervalVar(lunch_start, lunch_len, lunch_end, f"gli{group['index']}")
+            group_lunch[group["index"]] = (lunch_start, lunch_end)
+            group_intervals[group["index"]].append(lunch_interval)
         model.AddNoOverlap(group_intervals[group["index"]])
 
     # An assessor cannot run two executions at once, and needs a lunch of their
     # own inside the window.
     assessor_lunch = {}
     for assessor in range(inputs["assessors"]):
-        lunch_start = model.NewIntVar(lunch_earliest, lunch_latest, f"al{assessor}")
-        lunch_end = model.NewIntVar(0, horizon, f"ale{assessor}")
-        lunch_interval = model.NewIntervalVar(lunch_start, lunch_len, lunch_end, f"ali{assessor}")
-        assessor_lunch[assessor] = (lunch_start, lunch_end)
-        assessor_intervals[assessor].append(lunch_interval)
+        if lunch_len > 0:
+            lunch_start = model.NewIntVar(lunch_earliest, lunch_latest, f"al{assessor}")
+            lunch_end = model.NewIntVar(0, horizon, f"ale{assessor}")
+            lunch_interval = model.NewIntervalVar(lunch_start, lunch_len, lunch_end, f"ali{assessor}")
+            assessor_lunch[assessor] = (lunch_start, lunch_end)
+            assessor_intervals[assessor].append(lunch_interval)
         model.AddNoOverlap(assessor_intervals[assessor])
 
     # When a group is at lunch its assessors are free to be elsewhere, but the
@@ -246,10 +253,12 @@ def _extract(inputs, groups, tools, assignments, solved_starts, group_lunch, ass
                 key=lambda item: item[0],
             )
         ]
-        group["lunch_days"] = {0}
+        group["lunch_days"] = {0} if S.LUNCH_ENABLED else set()
 
     lunch_len = S.lunch_slots()
     for group in groups:
+        if group["index"] not in group_lunch:
+            continue
         start = group_lunch[group["index"]]
         for slot in range(start, start + lunch_len):
             for member in group["members"]:
@@ -356,7 +365,7 @@ def solve_schedule(inputs, max_spread_minutes=DEFAULT_MAX_START_SPREAD_MINUTES,
         for tool in tools
     )
     group_count = len(groups)
-    needed = locked * group_count + S.LUNCH_MINUTES
+    needed = locked * group_count + (S.LUNCH_MINUTES if S.LUNCH_ENABLED else 0)
     available = (
         inputs["end_minute"] - inputs["start_minute"]
         - S.slots_to_minutes(inputs.get("context_slots", 0))
