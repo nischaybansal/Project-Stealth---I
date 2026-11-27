@@ -8,7 +8,7 @@ import zipfile
 
 from openpyxl import Workbook
 from openpyxl.cell.cell import MergedCell
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
 from openpyxl.utils import get_column_letter
 
 
@@ -1849,6 +1849,9 @@ def write_summary_front_sheet(workbook, inputs, result):
             name_cell.fill = entry
             name_cell.border = border
             name_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            # The only cells on this sheet anyone is meant to change. Every
+            # other cell is locked once sheet protection is switched on below.
+            name_cell.protection = Protection(locked=False)
             ws.row_dimensions[row].height = 20
 
     name_table(
@@ -1873,6 +1876,14 @@ def write_summary_front_sheet(workbook, inputs, result):
     ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.print_area = f"A1:F{layout['last_row']}"
+
+    # Every cell is locked by default; protecting the sheet makes that bite,
+    # leaving only the shaded name cells editable. The summary is derived from
+    # what was entered in the app, so editing it here would only ever make the
+    # workbook disagree with the schedule beside it. No password: this stops
+    # an accidental keystroke, not a determined colleague, and a password
+    # nobody has been told is worse than none.
+    ws.protection.sheet = True
 
     ws.freeze_panes = "A3"
 
